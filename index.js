@@ -1,7 +1,8 @@
+// === DEPENDENCIES ===
 import express from "express";
 import bodyParser from "body-parser";
 import admin from "firebase-admin";
-import jwt from "jsonwebtoken"; // for Apple notifications
+import jwt from "jsonwebtoken"; // For Apple webhooks
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -10,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 
-// === Initialize Firebase Admin SDK ===
+// === FIREBASE ADMIN INIT ===
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || "{}");
 
 admin.initializeApp({
@@ -20,15 +21,17 @@ admin.initializeApp({
 const db = admin.firestore();
 const usersRef = db.collection("users");
 
-// === 🍋 Lemon Squeezy Webhook ===
+// === 🍋 LEMON SQUEEZY WEBHOOK ===
 app.post("/webhook/lemonsqueezy", async (req, res) => {
   const { meta, data } = req.body;
   const event = meta?.event_name;
 
+  console.log(`📩 LemonSqueezy Webhook received: ${event}`);
+
   if (!event.includes("subscription")) return res.sendStatus(204);
 
   try {
-    const email = data.attributes.user_email;
+    const email = data.attributes.user_email?.toLowerCase().trim();
     const productName = data.attributes.product_name.toLowerCase();
 
     const plan = productName.includes("ultimate")
@@ -37,10 +40,20 @@ app.post("/webhook/lemonsqueezy", async (req, res) => {
       ? "pro"
       : "free";
 
-    const match = await usersRef.where("profile.email", "==", email).get();
-    if (match.empty) return res.status(404).send("❌ No user found for email");
+    const snapshot = await usersRef.where("profile.email", "==", email).get();
 
-    match.forEach((doc) => {
+    if (snapshot.empty) {
+      console.log(`⚠️ No user found for ${email}. Creating placeholder user.`);
+      await usersRef.doc(email).set({
+        plan,
+        profile: { email },
+        subscribedAt: new Date().toISOString(),
+        billingProvider: "lemon_squeezy"
+      });
+      return res.status(200).send("✅ User created and plan set");
+    }
+
+    snapshot.forEach(doc => {
       doc.ref.update({
         plan,
         subscribedAt: new Date().toISOString(),
@@ -48,22 +61,22 @@ app.post("/webhook/lemonsqueezy", async (req, res) => {
       });
     });
 
-    console.log(`✅ LemonSqueezy → ${email} upgraded to ${plan}`);
+    console.log(`✅ ${email} upgraded to ${plan}`);
     res.sendStatus(200);
   } catch (err) {
-    console.error("Lemon webhook error:", err);
+    console.error("❌ LemonSqueezy webhook error:", err.message);
     res.sendStatus(500);
   }
 });
 
-// === 🍎 Apple App Store Webhook ===
+// === 🍎 APPLE APP STORE WEBHOOK ===
 app.post("/webhook/apple", async (req, res) => {
   try {
     const signedPayload = req.body.signedPayload;
     const decoded = jwt.decode(signedPayload, { complete: true });
     const notification = decoded?.payload;
 
-    const appleUserId = notification.data?.appAccountToken; // Should be Firebase UID
+    const appleUserId = notification.data?.appAccountToken; // Firebase UID
     const productId = notification.data?.productId;
 
     const plan = productId.includes("ultimate")
@@ -72,10 +85,11 @@ app.post("/webhook/apple", async (req, res) => {
       ? "pro"
       : "free";
 
-    const match = await usersRef.where("appleId", "==", appleUserId).get();
-    if (match.empty) return res.status(404).send("❌ Apple user not found");
+    const snapshot = await usersRef.where("appleId", "==", appleUserId).get();
 
-    match.forEach((doc) => {
+    if (snapshot.empty) return res.status(404).send("❌ Apple user not found");
+
+    snapshot.forEach(doc => {
       doc.ref.update({
         plan,
         subscribedAt: new Date().toISOString(),
@@ -83,15 +97,15 @@ app.post("/webhook/apple", async (req, res) => {
       });
     });
 
-    console.log(`🍎 Apple → ${appleUserId} to ${plan}`);
+    console.log(`🍎 Apple → ${appleUserId} upgraded to ${plan}`);
     res.sendStatus(200);
   } catch (err) {
-    console.error("Apple webhook error:", err);
+    console.error("❌ Apple webhook error:", err.message);
     res.sendStatus(500);
   }
 });
 
-// === 🤖 Google Play Webhook ===
+// === 🤖 GOOGLE PLAY WEBHOOK ===
 app.post("/webhook/google", async (req, res) => {
   try {
     const message = JSON.parse(
@@ -108,13 +122,13 @@ app.post("/webhook/google", async (req, res) => {
       ? "pro"
       : "free";
 
-    const match = await usersRef
+    const snapshot = await usersRef
       .where("googlePurchaseToken", "==", purchaseToken)
       .get();
 
-    if (match.empty) return res.status(404).send("❌ Google user not found");
+    if (snapshot.empty) return res.status(404).send("❌ Google user not found");
 
-    match.forEach((doc) => {
+    snapshot.forEach(doc => {
       doc.ref.update({
         plan,
         subscribedAt: new Date().toISOString(),
@@ -122,15 +136,15 @@ app.post("/webhook/google", async (req, res) => {
       });
     });
 
-    console.log(`🤖 Google → ${purchaseToken} to ${plan}`);
+    console.log(`🤖 Google → ${purchaseToken} upgraded to ${plan}`);
     res.sendStatus(200);
   } catch (err) {
-    console.error("Google webhook error:", err);
+    console.error("❌ Google webhook error:", err.message);
     res.sendStatus(500);
   }
 });
 
-// === Server Start ===
+// === START SERVER ===
 app.listen(PORT, () => {
   console.log(`🚀 Zynara Webhook listening on port ${PORT}`);
 });
